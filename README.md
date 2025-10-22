@@ -1,3 +1,6 @@
+# DeepRD
+Evaluation toolset for LLMs using parameterized graph complexity
+
 # Citation
 This repo contains code to perform the experiments and analysis in our paper: "Reasoning Models Reason Well, Until They Don’t"
 
@@ -10,10 +13,6 @@ Reasoning Models Reason Well, Until They Don’t
 Revanth Rameshkumar, Jimson Huang, Yunxin Sun, Fei Xia, Abulhair Saparov
 {revr,fxia}@uw.edu {huan2073,sun1114,asaparov}@purdue.edu
 
-
-
-# DeepRD
-Evaluation toolset for LLMs using parameterized graph complexity
 
 # Graph Dataset Generator (in /graph_generator)
 ## Usage
