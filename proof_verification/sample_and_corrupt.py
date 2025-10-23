@@ -7,9 +7,6 @@ import re
 import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-import hashlib
-import pickle
-import tqdm
 
 # Add llm_prediction to path to import llm_inference
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -22,7 +19,6 @@ from llm_inference import CachingLLM, get_content_from_response  # type: ignore
 
 # Verbose progress logging (always enabled)
 _VERBOSE = True
-_CLEAN_CACHE_FILE = "clean_proof_cache.pkl"
 
 
 # -------------------------------
@@ -181,142 +177,6 @@ def pick_line(contents: List[str], rng: random.Random) -> Optional[int]:
     return rng.choice(idxs)
 
 
-_gpt_line_llm: Optional[CachingLLM] = None
-
-
-def get_gpt_line_llm(model: str = "o3-mini") -> CachingLLM:
-    global _gpt_line_llm
-    if _gpt_line_llm is None:
-        # system_prompt = (
-        #     "You are given one proof line. Change a mathematical relation, bound, quantifier, or operator "
-        #     "so the line becomes mathematically incorrect. Do NOT change numbering, labels, formatting-only tokens, or spacing. "
-        #     "Return ONLY the modified single line (no commentary, no extra lines)."
-        #     "Make it fairly different...like > should be < or <=....not geq or >="
-        # )
-        system_prompt = (
-            "You are given one proof line. Change the line so that it becomes incorrect but still mathematically sensible.",
-            "Do NOT change numbering, labels, formatting-only tokens, or spacing. ",
-            "Try to keep the line very similar to the original line (so if there are markdown tokens for closing a line or spacing, keep those).",
-            "Return ONLY the modified single line (no commentary, no extra lines)."
-            "Make only ONE single change for the line. Change only ONE mathematical property or relation, do not do multiple changes."
-        )
-        _gpt_line_llm = CachingLLM(
-            model_params={"model": "o3-mini", "reasoning_effort": "medium"},
-            initial_messages=[{"role": "system", "content": system_prompt}],
-            cache_file="openai_ai_llm_cache.pkl",
-        )
-    return _gpt_line_llm
-
-
-def corrupt_with_gpt(line: str, model: str = "o3-mini") -> Optional[str]:
-    """Use cached LLM to propose a subtle incorrect change to a single line."""
-    try:
-        user_msg = f"{line}"
-        resp_list = get_gpt_line_llm(model).generate_responses([user_msg])
-        if not resp_list:
-            return None
-        resp = resp_list[0]
-        out = get_content_from_response(resp.to_dict()).replace("\n", " ").strip()
-        if out and out != line:
-            return out
-    except Exception:
-        return None
-    return None
-
-
-def apply_heuristic_corruption(line: str, rng: random.Random) -> Optional[str]:
-    s = line
-
-    # Define transformations (first applicable will be used)
-    transforms: List[Tuple[str, callable]] = []
-
-    # 1) Flip common LaTeX inequalities
-    def flip_leq(text: str) -> Optional[str]:
-        if r"\le" in text:
-            return text.replace(r"\le", r"\ge", 1)
-        if "≤" in text:
-            return text.replace("≤", "≥", 1)
-        return None
-
-    def flip_geq(text: str) -> Optional[str]:
-        if r"\ge" in text:
-            return text.replace(r"\ge", r"\le", 1)
-        if "≥" in text:
-            return text.replace("≥", "≤", 1)
-        return None
-
-    # 2) Turn equality into inequality (LaTeX aware)
-    def break_equality(text: str) -> Optional[str]:
-        # Try to avoid replacing in sequences like '=='
-        if " = " in text:
-            return text.replace(" = ", " \\neq ", 1)
-        m = re.search(r"(?<![:!<>])=", text)
-        if m:
-            i = m.start()
-            return text[:i] + r"\neq" + text[i + 1 :]
-        return None
-
-    # 3) Flip a plus to minus inside math-y stretches
-    def flip_plus_minus(text: str) -> Optional[str]:
-        if "+" in text:
-            return text.replace("+", "-", 1)
-        return None
-
-    # 4) Nudge index/range in sums/products
-    def nudge_sum_range(text: str) -> Optional[str]:
-        # \sum_{i = 1}^n  ->  \sum_{i = 0}^n
-        m = re.search(r"\\sum\s*\{?[_]?(\{?i[^}]*\})?", text)
-        if "^" in text and "\\sum" in text and "1}" in text:
-            return re.sub(r"\{1\}\^", "{0}^", text, count=1)
-        return None
-
-    # 5) Change n+1 to n-1 (various bracing styles)
-    def n_plus_one_to_n_minus_one(text: str) -> Optional[str]:
-        patt = [
-            r"n \+ 1",
-            r"\{n \+ 1\}",
-            r"\\paren \{n \+ 1\}",
-        ]
-        for p in patt:
-            if re.search(p, text):
-                return re.sub(p, "n - 1", text, count=1)
-        return None
-
-    # 6) Swap subset/superset style relations
-    def flip_subset_super(text: str) -> Optional[str]:
-        map_pairs = [
-            (r"\\subseteq", r"\\supseteq"),
-            (r"\\subset", r"\\supset"),
-            ("⊆", "⊇"),
-            ("⊂", "⊃"),
-        ]
-        for a, b in map_pairs:
-            if a in text:
-                return text.replace(a, b, 1)
-        return None
-
-    transforms.extend(
-        [
-            ("flip_leq", flip_leq),
-            ("flip_geq", flip_geq),
-            ("break_equality", break_equality),
-            ("flip_plus_minus", flip_plus_minus),
-            ("nudge_sum_range", nudge_sum_range),
-            ("n_plus_one_to_n_minus_one", n_plus_one_to_n_minus_one),
-            ("flip_subset_super", flip_subset_super),
-        ]
-    )
-
-    order = list(range(len(transforms)))
-    rng.shuffle(order)
-    for idx in order:
-        _, fn = transforms[idx]
-        out = fn(s)
-        if out and out != s:
-            return out
-
-    # Removed numeric last-resort tweak to avoid cosmetic label-only changes
-    return None
 
 
 SEMANTIC_TOKENS = set([
@@ -498,17 +358,6 @@ _gpt_corrupt_llm: Optional[CachingLLM] = None
 def get_gpt_corrupt_llm(model: str = "gpt-4o", cache_file: str = "openai_ai_llm_cache_sampler.pkl") -> CachingLLM:
     global _gpt_corrupt_llm
     if _gpt_corrupt_llm is None or _gpt_corrupt_llm.model_params.get("model") != model or getattr(_gpt_corrupt_llm, 'cache_file', None) != cache_file:
-        # system_prompt = (
-        #     "You are given one proof line. Change exactly ONE mathematical relation, bound, quantifier, or operator "
-        #     "so the line becomes mathematically incorrect. Do NOT change numbering, labels, formatting-only tokens, or spacing. "
-        #     "Return ONLY the modified single line (no commentary, no extra lines)."
-        # )
-        # _gpt_corrupt_llm = CachingLLM(
-        #     model_params={"model": model, "temperature": 0.0},
-        #     initial_messages=[{"role": "system", "content": system_prompt}],
-        #     cache_file=cache_file,
-        #     cache_only=_CACHE_ONLY,
-        # )
         system_prompt = (
             "You are given one proof line. Change the line so that it becomes incorrect but still mathematically sensible."
             "Do NOT change numbering, labels, formatting-only tokens, or spacing. "
@@ -571,79 +420,9 @@ def corrupt_lines_batched(
     """Call batch_gpt_corrupt_lines in small chunks to avoid cache collisions."""
     out: List[Optional[str]] = []
     step = max(1, int(batch_size))
-    print(batch_size)
     for i in range(0, len(lines), step):
         chunk = lines[i : i + step]
         out.extend(batch_gpt_corrupt_lines(chunk, model=model, cache_file=cache_file))
-    return out
-
-
-_gpt_clean_llm: Optional[CachingLLM] = None
-
-
-def get_gpt_clean_llm(model: str = "gpt-4o", cache_file: str = "openai_ai_llm_cache_sampler.pkl") -> CachingLLM:
-    global _gpt_clean_llm
-    if _gpt_clean_llm is None or _gpt_clean_llm.model_params.get("model") != model or getattr(_gpt_clean_llm, 'cache_file', None) != cache_file:
-        system_prompt = (
-            "You are provided a proof as numbered lines.\n"
-            "Task: Check whether the proof is correct and doesn't contain any mistakes.\n"
-            "Respond ONLY as strict JSON with a single key is_correct (true/false)."
-        )
-        _gpt_clean_llm = CachingLLM(
-            model_params={"model": "o3-mini", "reasoning_effort": "medium"},
-            initial_messages=[{"role": "system", "content": system_prompt}],
-            cache_file=cache_file,
-        )
-    return _gpt_clean_llm
-
-
-def number_lines_for_prompt(lines: List[str]) -> str:
-    return "\n".join(f"{i+1}: {ln}" for i, ln in enumerate(lines))
-
-
-def batch_gpt_check_clean(proofs: List[List[str]], model: str = "gpt-4o", cache_file: str = "openai_ai_llm_cache_sampler.pkl") -> List[Optional[bool]]:
-    if not proofs:
-        return []
-    prompts: List[str] = []
-    for lines in proofs:
-        numbered = number_lines_for_prompt(lines)
-        prompt = (
-            "Proof (numbered lines):\n" + numbered + "\n\n" +
-            "Return ONLY JSON: {\"is_correct\": true/false}"
-        )
-        prompts.append(prompt)
-    try:
-        resps = get_gpt_clean_llm(model, cache_file=cache_file).generate_responses(prompts)
-    except Exception:
-        return [None] * len(proofs)
-    out: List[Optional[bool]] = []
-    for r in resps:
-        text = None
-        try:
-            text = get_content_from_response(r.to_dict())
-        except Exception:
-            text = None
-        if not text:
-            out.append(None)
-            continue
-        text = text.strip()
-        val: Optional[bool] = None
-        try:
-            data = json.loads(text)
-            if isinstance(data, dict) and "is_correct" in data:
-                if isinstance(data["is_correct"], bool):
-                    val = data["is_correct"]
-                elif isinstance(data["is_correct"], str):
-                    val = data["is_correct"].strip().lower() in ("true", "yes")
-        except Exception:
-            pass
-        if val is None:
-            low = text.lower()
-            if "true" in low and "false" not in low:
-                val = True
-            elif "false" in low and "true" not in low:
-                val = False
-        out.append(val)
     return out
 
 
@@ -677,226 +456,6 @@ def try_corrupt_with_fallback(
     return None
 
 
-# -------------------------------
-# Clean-only: two-pass check+fix using o3-mini
-#   Pass 1: list all incorrect line numbers (1-based)
-#   Pass 2: fix each incorrect line once and build cleaned proof
-# -------------------------------
-
-_gpt_check_llm_o3: Optional[CachingLLM] = None
-_gpt_fix_llm_o3: Optional[CachingLLM] = None
-
-
-def get_gpt_check_llm_o3(cache_file: str) -> CachingLLM:
-    global _gpt_check_llm_o3
-    if _gpt_check_llm_o3 is None or getattr(_gpt_check_llm_o3, 'cache_file', None) != cache_file:
-        system_prompt = (
-            "You are provided a theorem and a candidate proof for it.\n"
-            "Task: Check whether the proof is correct for the theorem.\n"
-            "Respond ONLY as strict JSON with keys: is_correct (true/false), error_line (integer or null)."
-        )
-        _gpt_check_llm_o3 = CachingLLM(
-            model_params={"model": "o3-mini", "reasoning_effort": "medium"},
-            initial_messages=[{"role": "system", "content": system_prompt}],
-            cache_file=cache_file,
-        )
-    return _gpt_check_llm_o3
-
-
-def get_gpt_fix_llm_o3(cache_file: str) -> CachingLLM:
-    global _gpt_fix_llm_o3
-    if _gpt_fix_llm_o3 is None or getattr(_gpt_fix_llm_o3, 'cache_file', None) != cache_file:
-        system_prompt = (
-            "You are given a proof as numbered lines and the index of a faulty line.\n"
-            "Think carefully about what the error in that line is and why it is the faulty line.\n"
-            "Return ONLY the corrected content for that single line (no numbering, no commentary, no extra lines).\n"
-            "Return the fully modified line that we can replace the original line with (no numbering, no commentary, no extra lines)s."
-        )
-        _gpt_fix_llm_o3 = CachingLLM(
-            model_params={"model": "o3-mini", "reasoning_effort": "medium"},
-            initial_messages=[{"role": "system", "content": system_prompt}],
-            cache_file=cache_file,
-        )
-    return _gpt_fix_llm_o3
-
-
-_gpt_list_errors_llm_o3: Optional[CachingLLM] = None
-
-
-def get_gpt_list_errors_llm_o3(cache_file: str) -> CachingLLM:
-    global _gpt_list_errors_llm_o3
-    if _gpt_list_errors_llm_o3 is None or getattr(_gpt_list_errors_llm_o3, 'cache_file', None) != cache_file:
-        system_prompt = (
-            "You are provided a theorem and a candidate proof for it as numbered lines.\n"
-            "Identify every incorrect line in the proof. Be careful because there can be multiple!\n"
-            "Respond ONLY as strict JSON: {\"errors\": [<integers 1-based>]} with no commentary."
-        )
-        _gpt_list_errors_llm_o3 = CachingLLM(
-            model_params={"model": "o3-mini", "reasoning_effort": "medium"},
-            initial_messages=[{"role": "system", "content": system_prompt}],
-            cache_file=cache_file,
-        )
-    return _gpt_list_errors_llm_o3
-
-
-def batch_gpt_list_errors_o3(proofs: List[List[str]], cache_file: str) -> List[List[int]]:
-    if not proofs:
-        return []
-    prompts = []
-    for lines in proofs:
-        numbered = number_lines_for_prompt(lines)
-        prompt = (
-            "Proof (numbered):\n" + numbered + "\n\n" +
-            "Return ONLY JSON: {\"errors\": [<integers 1-based>]}"
-        )
-        prompts.append(prompt)
-    try:
-        resps = get_gpt_list_errors_llm_o3(cache_file).generate_responses(prompts)
-    except Exception:
-        return [[] for _ in proofs]
-    out: List[List[int]] = []
-    for r in resps:
-        errs: List[int] = []
-        try:
-            text = get_content_from_response(r.to_dict())
-            data = json.loads(text)
-            if isinstance(data, dict) and isinstance(data.get("errors"), list):
-                for v in data["errors"]:
-                    try:
-                        iv = int(v)
-                        if iv >= 1:
-                            errs.append(iv)
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-        # Deduplicate and sort
-        errs = sorted(set(errs))
-        out.append(errs)
-    return out
-
-
-def batch_gpt_check_proofs_o3(proofs: List[List[str]], cache_file: str) -> List[Optional[Dict[str, Any]]]:
-    if not proofs:
-        return []
-    prompts = []
-    for lines in proofs:
-        numbered = number_lines_for_prompt(lines)
-        prompt = (
-            "Proof (numbered):\n" + numbered + "\n\n" +
-            "Return ONLY JSON: {\"is_correct\": true/false, \"error_line\": <int or null>}"
-        )
-        prompts.append(prompt)
-    try:
-        resps = get_gpt_check_llm_o3(cache_file).generate_responses(prompts)
-    except Exception:
-        return [None] * len(proofs)
-    out: List[Optional[Dict[str, Any]]] = []
-    for r in resps:
-        data = None
-        try:
-            text = get_content_from_response(r.to_dict())
-            data = json.loads(text)
-            if not isinstance(data, dict):
-                data = None
-        except Exception:
-            data = None
-        out.append(data)
-    return out
-
-
-def batch_gpt_fix_line_o3(proofs: List[List[str]], error_lines_1b: List[Optional[int]], cache_file: str) -> List[Optional[str]]:
-    """Fix a specific 1-based error line for each proof. Returns corrected line strings or None."""
-    if not proofs:
-        return []
-    prompts = []
-    for lines, el in zip(proofs, error_lines_1b):
-        if not isinstance(el, int) or el < 1 or el > len(lines):
-            prompts.append("")
-            continue
-        numbered = number_lines_for_prompt(lines)
-        prompt = (
-            f"Proof (numbered):\n{numbered}\n\n" +
-            f"Faulty line: {el}.\n" +
-            "Return ONLY the corrected content for that single line."
-        )
-        prompts.append(prompt)
-    try:
-        resps = get_gpt_fix_llm_o3(cache_file).generate_responses(prompts)
-    except Exception:
-        return [None] * len(proofs)
-    outs: List[Optional[str]] = []
-    for r in resps:
-        try:
-            text = get_content_from_response(r.to_dict())
-            if text:
-                text = text.replace("\n", " ").strip()
-            outs.append(text if text else None)
-        except Exception:
-            outs.append(None)
-    return outs
-
-
-def clean_proofs_two_pass(
-    proofs: List[List[str]],
-    cache_file: str,
-) -> Tuple[List[List[str]], List[List[int]]]:
-    """Two-pass clean: pass1 list all incorrect lines; pass2 fix those lines once.
-    Returns (cleaned_proofs, corrected_lines_1b_per_proof). Unfixable proofs return []."""
-    if not proofs:
-        return [], []
-    # Pass 1: list all errors (1-based)
-    errors_per_proof = batch_gpt_list_errors_o3(proofs, cache_file)
-    # Flatten corrections
-    to_fix_proofs: List[List[str]] = []
-    to_fix_lines: List[int] = []
-    index_map: List[Tuple[int, int]] = []  # (proof_idx, err_line)
-    for pi, errs in enumerate(errors_per_proof):
-        for el in errs:
-            if 1 <= el <= len(proofs[pi]):
-                to_fix_proofs.append(proofs[pi])
-                to_fix_lines.append(el)
-                index_map.append((pi, el))
-    # Pass 2: fix all in batch
-    fixes = batch_gpt_fix_line_o3(to_fix_proofs, to_fix_lines, cache_file) if to_fix_proofs else []
-    working = [list(p) for p in proofs]
-    corrections: List[List[int]] = [[] for _ in proofs]
-    for (pi, el), fx in zip(index_map, fixes):
-        if not fx:
-            continue
-        if 1 <= el <= len(working[pi]):
-            working[pi][el - 1] = fx
-            corrections[pi].append(el)
-    # Final simple accept: keep all proofs where no further errors were reported initially (or we applied fixes)
-    # We could optionally re-check, but per spec no iteration.
-    cleaned = working
-    return cleaned, corrections
-
-
-def _proof_key(lines: List[str]) -> str:
-    h = hashlib.sha256()
-    for ln in lines:
-        h.update(b"\x00")
-        h.update(ln.encode("utf-8", errors="ignore"))
-    return h.hexdigest()
-
-
-def _load_clean_cache(path: str) -> Dict[str, Tuple[List[str], List[int]]]:
-    try:
-        with open(path, "rb") as f:
-            return pickle.load(f)
-    except Exception:
-        return {}
-
-
-def _save_clean_cache(path: str, cache: Dict[str, Tuple[List[str], List[int]]]) -> None:
-    try:
-        with open(path, "wb") as f:
-            pickle.dump(cache, f)
-    except Exception:
-        pass
-
-
 _gpt_pick_llm: Optional[CachingLLM] = None
 
 
@@ -912,197 +471,6 @@ def get_gpt_pick_llm(model: str = "gpt-4o", cache_file: str = "openai_ai_llm_cac
     return _gpt_pick_llm
 
 
-def gpt_pick_and_corrupt(
-    contents: List[str],
-    model: str = "o3-mini",
-) -> Optional[Tuple[int, str]]:
-    """Ask GPT to select a consequential line and corrupt it.
-
-    Returns (line_index, modified_line) or None on failure.
-    """
-    try:
-        candidates = line_indices_substantial(contents)
-        if not candidates:
-            return None
-        numbered = [f"{i+1}: {ln}" for i, ln in enumerate(contents)]
-        proof_block = "\n".join(numbered)
-        allowed_list = "\n".join([f"[{i}] {contents[i]}" for i in candidates])
-        prompt = (
-            "You are given a proof as numbered lines. Choose ONE consequential line (not scaffolding, not labels, "
-            "not formatting like {{...}}, not 'Then:'/'So:' style) whose change would invalidate the proof. "
-            "Change exactly ONE mathematical relation, bound, quantifier, or operator to make it incorrect. "
-            "Do NOT change numbering/labels/formatting-only tokens or spacing. You MUST select a line_index from the allowed list below. Return STRICT JSON only as:\n"
-            "{\n  \"line_index\": <0-based index>,\n  \"modified_line\": \"...single line...\"\n}\n\n"
-            "Allowed line indices (0-based) and contents:\n" + allowed_list + "\n\n" +
-            "Proof (numbered):\n" + proof_block
-        )
-        resp_list = get_gpt_pick_llm(model).generate_responses([prompt])
-        if not resp_list:
-            return None
-        out = get_content_from_response(resp_list[0].to_dict())
-        if not out:
-            return None
-        try:
-            data = json.loads(out)
-        except Exception:
-            m = re.search(r"\{[\s\S]*\}", out)
-            if not m:
-                return None
-            try:
-                data = json.loads(m.group(0))
-            except Exception:
-                return None
-        idx = data.get("line_index")
-        new_line = data.get("modified_line")
-        if not isinstance(idx, int) or not isinstance(new_line, str):
-            return None
-        # Adjust for possible 1-based mistake
-        if idx == len(contents):
-            idx = idx - 1
-        if idx < 0 or idx >= len(contents):
-            return None
-        # Must be in allowed candidates
-        if idx not in candidates and (idx - 1) in candidates:
-            idx = idx - 1
-        if idx not in candidates:
-            return None
-        new_line = new_line.replace("\n", " ").strip()
-        orig = contents[idx]
-        if not is_substantial_line(orig):
-            return None
-        if new_line == orig:
-            return None
-        if extract_semantic_tokens(new_line) == extract_semantic_tokens(orig) and not numbers_changed(orig, new_line):
-            return None
-        return idx, new_line
-    except Exception:
-        return None
-
-
-def batch_gpt_pick_and_corrupt(
-    contents_list: List[List[str]],
-    model: str = "o3-mini",
-) -> List[Optional[Tuple[int, str]]]:
-    """Batch GPT line selection + corruption using cached client for concurrency.
-
-    Returns list aligned with contents_list of (idx, modified_line) or None.
-    """
-    if not contents_list:
-        return []
-    prompts: List[str] = []
-    candidates_list = []
-    for contents in contents_list:
-        candidates = line_indices_substantial(contents)
-        candidates_list.append(candidates)
-        numbered = [f"{i+1}: {ln}" for i, ln in enumerate(contents)]
-        proof_block = "\n".join(numbered)
-        allowed_list = "\n".join([f"[{i}] {contents[i]}" for i in candidates])
-        prompt = (
-            "You are given a proof as numbered lines. Choose ONE consequential line (not scaffolding, not labels, "
-            "not formatting like {{...}}, not 'Then:'/'So:' style) whose change would invalidate the proof. "
-            "Change exactly ONE mathematical relation, bound, quantifier, or operator to make it incorrect. "
-            "Do NOT change numbering/labels/formatting-only tokens or spacing. You MUST select a line_index from the allowed list below. "
-            "Return STRICT JSON only as:\n"
-            "{\n  \"line_index\": <0-based index>,\n  \"modified_line\": \"...single line...\"\n}\n\n"
-            "Allowed line indices (0-based) and contents:\n" + allowed_list + "\n\n" +
-            "Proof (numbered):\n" + proof_block
-        )
-        prompts.append(prompt)
-
-    try:
-        responses = get_gpt_pick_llm(model).generate_responses(prompts)
-    except Exception:
-        return [None] * len(contents_list)
-
-    out_list: List[Optional[Tuple[int, str]]] = []
-    for contents, candidates, resp in zip(contents_list, candidates_list, responses):
-        try:
-            out = get_content_from_response(resp.to_dict())
-        except Exception:
-            out = None
-        if not out:
-            out_list.append(None)
-            continue
-        try:
-            data = json.loads(out)
-        except Exception:
-            m = re.search(r"\{[\s\S]*\}", out)
-            if not m:
-                out_list.append(None)
-                continue
-            try:
-                data = json.loads(m.group(0))
-            except Exception:
-                out_list.append(None)
-                continue
-        idx = data.get("line_index")
-        new_line = data.get("modified_line")
-        if not isinstance(idx, int) or not isinstance(new_line, str):
-            out_list.append(None)
-            continue
-        # Adjust for possible 1-based mistake
-        if idx == len(contents):
-            idx = idx - 1
-        if idx < 0 or idx >= len(contents):
-            out_list.append(None)
-            continue
-        # Must be in allowed candidates; allow off-by-one to 1-based
-        if idx not in candidates and (idx - 1) in candidates:
-            idx = idx - 1
-        if idx not in candidates:
-            out_list.append(None)
-            continue
-        new_line = new_line.replace("\n", " ").strip()
-        orig = contents[idx]
-        if not is_substantial_line(orig):
-            out_list.append(None)
-            continue
-        if new_line == orig or (extract_semantic_tokens(new_line) == extract_semantic_tokens(orig) and not numbers_changed(orig, new_line)):
-            out_list.append(None)
-            continue
-        out_list.append((idx, new_line))
-
-    return out_list
-
-
-def corrupt_line(line: str, rng: random.Random, use_gpt: bool) -> Optional[str]:
-    """Return a modified line if corruption succeeded, else None."""
-    if use_gpt:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if api_key:
-            out = corrupt_with_gpt(line, api_key=api_key)
-            if out and out != line:
-                # Require a semantic change
-                if extract_semantic_tokens(out) != extract_semantic_tokens(line):
-                    return out
-    out = apply_heuristic_corruption(line, rng)
-    if out and out != line:
-        # Heuristic transforms already target relations/bounds; keep for safety
-        if extract_semantic_tokens(out) != extract_semantic_tokens(line):
-            return out
-    return None
-
-
-def corrupt_random_line(contents: List[str], rng: random.Random, use_gpt: bool) -> Optional[Tuple[int, str, str, str]]:
-    """Try to corrupt one substantial line.
-
-    If use_gpt is True: only use GPT pick; no heuristic fallback.
-    If use_gpt is False: use heuristic only.
-    """
-    if use_gpt:
-        # GPT path handled in two-stage batching elsewhere; do not use here
-        return None
-    # Heuristic path only
-    idxs = line_indices_substantial(contents)
-    if not idxs:
-        return None
-    rng.shuffle(idxs)
-    for i in idxs:
-        orig = contents[i]
-        mod = corrupt_line(orig, rng, use_gpt=False)
-        if mod is not None and mod != orig:
-            return i, mod, "heuristic", "heuristic"
-    return None
 
 
 def compute_adaptive_bins(
@@ -1456,9 +824,6 @@ def run(
     llm_cache_file: str = "openai_ai_llm_cache_sampler_2.pkl",
     pick_batch_size: int = 1,
     corrupt_batch_size: int = 100,
-    clean_only: bool = False,
-    clean_batch_size: int = 100,
-    include_ids: Optional[List[int]] = None,
     hard_bins: bool = False,
     min_samples_per_bin: int = 10,
 ) -> Dict[str, Any]:
@@ -1471,34 +836,8 @@ def run(
     if not proofs:
         raise SystemExit(f"No proofs meet the minimum line requirement (min_lines={min_lines}).")
 
-    # Handle forced includes by theorem id
-    forced: List[Tuple[ProofRef, int]] = []
-    include_set = set(include_ids or [])
-    if include_set:
-        # Prefer the first proof (lowest proof_index) per theorem id
-        seen_ids = set()
-        remaining: List[ProofRef] = []
-        proofs_sorted = sorted(proofs, key=lambda p: (p.theorem_id, p.proof_index))
-        for p in proofs_sorted:
-            tid = None
-            try:
-                tid = int(p.theorem_id)
-            except Exception:
-                tid = p.theorem_id
-            if isinstance(tid, int) and tid in include_set and tid not in seen_ids:
-                forced.append((p, 0))
-                seen_ids.add(tid)
-            else:
-                remaining.append(p)
-        proofs = remaining
-        # Trim in case forced exceeds n
-        if len(forced) > n:
-            forced = forced[:n]
-
-    # Sample the rest to reach n
-    remaining_needed = max(0, n - len(forced))
-    picked_rest, bin_edges = sample_stratified(proofs, remaining_needed, seed, n_bins=bins, hard_bins=hard_bins, min_samples_per_bin=min_samples_per_bin)
-    picked = forced + picked_rest
+    # Sample proofs
+    picked, bin_edges = sample_stratified(proofs, n, seed, n_bins=bins, hard_bins=hard_bins, min_samples_per_bin=min_samples_per_bin)
     bin_boundaries = None
     if hard_bins and bin_edges:
         # Convert float edges to non-overlapping, contiguous integer bins [lo, hi]
@@ -1524,66 +863,23 @@ def run(
                 lo = hi + 1
             # Print integer bin boundaries for visibility
             print(f"hard-bins integer boundaries (inclusive): {bin_boundaries}")
-    # print(sorted([len(ref.contents) for ref, _ in picked]))
-    # return
     rng = random.Random(seed)
     results: List[Dict[str, Any]] = []
 
     chosen_keys = set()
-    for ref, _ in forced:
-        chosen_keys.add((ref.source, ref.theorem_id, ref.proof_index))
     if use_gpt:
-        # Two-stage: pick lines (optionally filter clean proofs), then corrupt them.
+        # Two-stage: pick lines then corrupt them
         contents_list = [ref.contents for ref, _ in picked]
-        # If clean-only, iteratively correct these proofs until they pass
-        if clean_only:
-            # Local proof-clean cache for persistence across runs
-            clean_cache = _load_clean_cache(_CLEAN_CACHE_FILE)
-            clean_cache = {}
-            cleaned = []
-            corrections = []
-            todo_idx = []
-            todo_contents = []
-            for i, lines in enumerate(contents_list):
-                key = _proof_key(lines)
-                if key in clean_cache:
-                    c_lines, c_corr = clean_cache[key]
-                    cleaned.append(c_lines)
-                    corrections.append(c_corr)
-                else:
-                    cleaned.append([])
-                    corrections.append([])
-                    todo_idx.append(i)
-                    todo_contents.append(lines)
-            if todo_contents:
-                new_cleaned, new_corr = clean_proofs_two_pass(todo_contents, cache_file=llm_cache_file)
-                for j, i in enumerate(todo_idx):
-                    cleaned[i] = new_cleaned[j]
-                    corrections[i] = new_corr[j]
-                    if cleaned[i]:
-                        clean_cache[_proof_key(contents_list[i])] = (cleaned[i], corrections[i])
-                _save_clean_cache(_CLEAN_CACHE_FILE, clean_cache)
-            filtered = [(pk, c, corr) for (pk, c, corr) in zip(picked, cleaned, corrections) if c]
-            if _VERBOSE:
-                print(f"clean-only (pre-pick): cleaned {len(filtered)}/{len(picked)}")
-            if not filtered and fail_fast:
-                return {"seed": seed, "n": n, "use_gpt": use_gpt, "min_lines": min_lines, "samples": []}
-            picked = [t[0] for t in filtered]
-            contents_list = [t[1] for t in filtered]
-            preclean_corr_lists = [t[2] for t in filtered]
-        else:
-            preclean_corr_lists = [[] for _ in picked]
         chosen_idxs = pick_lines_batched(contents_list, model="gpt-4o", cache_file=llm_cache_file, batch_size=pick_batch_size)
         if _VERBOSE:
             print(f"gpt-pick: requested={len(contents_list)} chosen={sum(1 for i in chosen_idxs if i is not None)}")
         to_corrupt: List[str] = []
-        back_refs: List[Tuple[ProofRef, int, int, List[int], List[str]]] = []  # (ref, bin, idx, corr_list, cleaned_lines)
-        for (ref, bin_idx), idx, corr_list, cleaned_lines in zip(picked, chosen_idxs, preclean_corr_lists, contents_list):
+        back_refs: List[Tuple[ProofRef, int, int, List[str]]] = []  # (ref, bin, idx, proof_lines)
+        for (ref, bin_idx), idx in zip(picked, chosen_idxs):
             if idx is None:
                 continue
-            # Use cleaned content for corruption prompt
-            to_corrupt.append(cleaned_lines[idx])
-            back_refs.append((ref, bin_idx, idx, corr_list, cleaned_lines))
+            to_corrupt.append(ref.contents[idx])
+            back_refs.append((ref, bin_idx, idx, ref.contents))
         if not to_corrupt and fail_fast:
             if _VERBOSE:
                 print("No eligible GPT picks in initial batch; failing fast.")
@@ -1591,25 +887,24 @@ def run(
         mods = corrupt_lines_batched(to_corrupt, model="o3-mini", cache_file=llm_cache_file, batch_size=corrupt_batch_size)
         if _VERBOSE:
             print(f"gpt-corrupt: requested={len(to_corrupt)} modified={sum(1 for m in mods if m is not None)}")
-        print(len(mods))
 
         # First pass: identify which corruptions need fallback
         fallback_needed = []
         valid_corruptions = []
         fail_reasons = {"none": 0, "unchanged": 0, "semantic_only": 0}
 
-        for i, ((ref, bin_idx, idx, corr_list, cleaned_lines), mod) in enumerate(zip(back_refs, mods)):
-            if not is_meaningful_change(cleaned_lines[idx], mod):
+        for i, ((ref, bin_idx, idx, proof_lines), mod) in enumerate(zip(back_refs, mods)):
+            if not is_meaningful_change(proof_lines[idx], mod):
                 # Determine failure reason for logging
                 if not mod:
                     fail_reasons["none"] += 1
-                elif mod == cleaned_lines[idx]:
+                elif mod == proof_lines[idx]:
                     fail_reasons["unchanged"] += 1
                 else:
                     fail_reasons["semantic_only"] += 1
-                fallback_needed.append((i, ref, bin_idx, idx, corr_list, cleaned_lines))
+                fallback_needed.append((i, ref, bin_idx, idx, proof_lines))
             else:
-                valid_corruptions.append((i, ref, bin_idx, idx, corr_list, cleaned_lines, mod))
+                valid_corruptions.append((i, ref, bin_idx, idx, proof_lines, mod))
 
         if _VERBOSE and fallback_needed:
             print(f"Validation failures: None={fail_reasons['none']}, Unchanged={fail_reasons['unchanged']}, SemanticOnly={fail_reasons['semantic_only']}")
@@ -1622,13 +917,13 @@ def run(
             fallback_lines = []
             fallback_map = []  # Maps fallback_lines index -> (original_i, candidate_idx)
 
-            for i, ref, bin_idx, idx, corr_list, cleaned_lines in fallback_needed:
-                candidates = line_indices_substantial(cleaned_lines)
+            for i, ref, bin_idx, idx, proof_lines in fallback_needed:
+                candidates = line_indices_substantial(proof_lines)
                 if not candidates:
                     continue
                 # Try up to 6 candidates per proof
                 for candidate_idx in candidates[:6]:
-                    fallback_lines.append(cleaned_lines[candidate_idx])
+                    fallback_lines.append(proof_lines[candidate_idx])
                     fallback_map.append((i, candidate_idx))
 
             if fallback_lines:
@@ -1645,21 +940,20 @@ def run(
 
         # Combine valid corruptions and successful fallbacks
         all_corruptions = []
-        for i, ref, bin_idx, idx, corr_list, cleaned_lines, mod in valid_corruptions:
-            all_corruptions.append((ref, bin_idx, idx, corr_list, cleaned_lines, mod))
+        for i, ref, bin_idx, idx, proof_lines, mod in valid_corruptions:
+            all_corruptions.append((ref, bin_idx, idx, proof_lines, mod))
 
-        for i, ref, bin_idx, idx, corr_list, cleaned_lines in fallback_needed:
+        for i, ref, bin_idx, idx, proof_lines in fallback_needed:
             if i in fallback_results:
                 new_idx, new_mod = fallback_results[i]
-                all_corruptions.append((ref, bin_idx, new_idx, corr_list, cleaned_lines, new_mod))
+                all_corruptions.append((ref, bin_idx, new_idx, proof_lines, new_mod))
 
         # Build final results
         if _VERBOSE:
             print(f"Final: {len(all_corruptions)}/{len(back_refs)} corruptions successful")
 
-        for ref, bin_idx, idx, corr_list, cleaned_lines, mod in all_corruptions:
-            # Apply modification on cleaned content, not original
-            modified_proof = list(cleaned_lines)
+        for ref, bin_idx, idx, proof_lines, mod in all_corruptions:
+            modified_proof = list(proof_lines)
             modified_proof[idx] = mod
             results.append(
                 {
@@ -1670,50 +964,17 @@ def run(
                     "proof_length": len(ref.contents),
                     "bin_index": bin_idx,
                     "chosen_line_index": idx,
-                    "original_line": cleaned_lines[idx],
+                    "original_line": proof_lines[idx],
                     "modified_line": mod,
                     "original_proof": ref.contents,
                     "modified_proof": modified_proof,
                     "selection_method": "gpt-pick",
                     "corruption_method": "gpt-corrupt",
-                    "preclean_corrected_lines_1b": corr_list,
-                }
-            )
-            chosen_keys.add((ref.source, ref.theorem_id, ref.proof_index))
-    else:
-        for ref, bin_idx in picked:
-            attempt = corrupt_random_line(ref.contents, rng, use_gpt=False)
-            if attempt is None:
-                continue
-            line_idx, modified_line, selection_method, corruption_method = attempt
-            original_line = ref.contents[line_idx]
-            modified_proof = list(ref.contents)
-            modified_proof[line_idx] = modified_line
-
-            results.append(
-                {
-                    "source": ref.source,
-                    "theorem_id": ref.theorem_id,
-                    "theorem_title": ref.theorem_title,
-                    "proof_index": ref.proof_index,
-                    "proof_length": len(ref.contents),
-                    "bin_index": bin_idx,
-                    "chosen_line_index": line_idx,
-                    "original_line": original_line,
-                    "modified_line": modified_line,
-                    "original_proof": ref.contents,
-                    "modified_proof": modified_proof,
-                    "selection_method": selection_method,
-                    "corruption_method": corruption_method,
                 }
             )
             chosen_keys.add((ref.source, ref.theorem_id, ref.proof_index))
 
-    # print('results ', len(results))
-    # raise ValueError
     # If we didn't reach n due to filters, top up with random unique proofs
-    # print(len(results))
-    # raise ValueError
     if len(results) < n:
         rng2 = random.Random(seed + 1)
         indices = list(range(len(proofs)))
@@ -1740,54 +1001,15 @@ def run(
                 cursor += chunk_size
                 if not chunk:
                     break
-                # Optional clean-only: iteratively correct before picking lines
                 chunk_contents = [r.contents for r in chunk]
-                if clean_only:
-                    clean_cache = _load_clean_cache(_CLEAN_CACHE_FILE)
-                    cleaned_chunk = []
-                    corr_chunk = []
-                    todo_idx = []
-                    todo_cont = []
-                    for i, lines in enumerate(chunk_contents):
-                        key = _proof_key(lines)
-                        if key in clean_cache:
-                            c_lines, c_corr = clean_cache[key]
-                            cleaned_chunk.append(c_lines)
-                            corr_chunk.append(c_corr)
-                        else:
-                            cleaned_chunk.append([])
-                            corr_chunk.append([])
-                            todo_idx.append(i)
-                            todo_cont.append(lines)
-                    if todo_cont:
-                        new_cleaned, new_corr = clean_proofs_two_pass(todo_cont, cache_file=llm_cache_file)
-                        for j, i in enumerate(todo_idx):
-                            cleaned_chunk[i] = new_cleaned[j]
-                            corr_chunk[i] = new_corr[j]
-                            if cleaned_chunk[i]:
-                                clean_cache[_proof_key(chunk_contents[i])] = (cleaned_chunk[i], corr_chunk[i])
-                        _save_clean_cache(_CLEAN_CACHE_FILE, clean_cache)
-                    tmp = [(r, c, corr) for r, c, corr in zip(chunk, cleaned_chunk, corr_chunk) if c]
-                    if _VERBOSE:
-                        print(f"clean-only (topup): cleaned {len(tmp)}/{len(chunk)}")
-                    if not tmp:
-                        batch_count += 1
-                        continue
-                    chunk = [t[0] for t in tmp]
-                    chunk_contents = [t[1] for t in tmp]
-                    corr_chunk = [t[2] for t in tmp]
-                else:
-                    corr_chunk = [[] for _ in chunk]
                 chosen_idxs = pick_lines_batched(chunk_contents, model="gpt-4o", cache_file=llm_cache_file, batch_size=pick_batch_size)
                 to_corrupt: List[str] = []
-                back_refs: List[Tuple[ProofRef, int, List[int], List[str]]] = []  # (ref, idx, corr_list, cleaned_lines)
-                for i, (ref, idx, corr_list) in enumerate(zip(chunk, chosen_idxs, corr_chunk)):
+                back_refs: List[Tuple[ProofRef, int, List[str]]] = []  # (ref, idx, proof_lines)
+                for ref, idx in zip(chunk, chosen_idxs):
                     if idx is None:
                         continue
-                    # Use cleaned chunk content for corruption
-                    cleaned_lines = chunk_contents[i]
-                    to_corrupt.append(cleaned_lines[idx])
-                    back_refs.append((ref, idx, corr_list, cleaned_lines))
+                    to_corrupt.append(ref.contents[idx])
+                    back_refs.append((ref, idx, ref.contents))
                 if not to_corrupt:
                     if _VERBOSE:
                         print("Top-up batch produced no picks; moving to next chunk")
@@ -1796,7 +1018,7 @@ def run(
                 mods = corrupt_lines_batched(to_corrupt, model="gpt-4o", cache_file=llm_cache_file, batch_size=corrupt_batch_size)
                 if _VERBOSE:
                     print(f"topup batch: pick_chosen={sum(1 for i in chosen_idxs if i is not None)} corrupt_ok={sum(1 for m in mods if m is not None)} results={len(results)}")
-                for (ref, idx, corr_list, cleaned_lines), mod in zip(back_refs, mods):
+                for (ref, idx, proof_lines), mod in zip(back_refs, mods):
                     if len(results) >= n:
                         break
                     if mod is None:
@@ -1804,19 +1026,17 @@ def run(
                     key = (ref.source, ref.theorem_id, ref.proof_index)
                     if key in chosen_keys:
                         continue
-                    orig = cleaned_lines[idx]
+                    orig = proof_lines[idx]
                     if mod == orig or (
                         extract_semantic_tokens(mod) == extract_semantic_tokens(orig) and not numbers_changed(orig, mod)
                     ):
-                        fb = try_corrupt_with_fallback(cleaned_lines, initial_idx=None, cache_file=llm_cache_file, model="gpt-4o")
+                        fb = try_corrupt_with_fallback(proof_lines, initial_idx=None, cache_file=llm_cache_file, model="gpt-4o")
                         if not fb:
                             continue
                         idx, mod = fb
-                        orig = cleaned_lines[idx]
-                    # Apply modification on cleaned content
-                    modified_proof = list(cleaned_lines)
+                        orig = proof_lines[idx]
+                    modified_proof = list(proof_lines)
                     modified_proof[idx] = mod
-                    print('ADDED TO RESULTS: ', len(results))
                     results.append(
                         {
                             "source": ref.source,
@@ -1832,44 +1052,9 @@ def run(
                             "modified_proof": modified_proof,
                             "selection_method": "gpt-pick",
                             "corruption_method": "gpt-corrupt",
-                            "preclean_corrected_lines_1b": corr_list,
                         }
                     )
                     chosen_keys.add(key)
-        else:
-            # Heuristic top-up
-            for i in indices:
-                if len(results) >= n:
-                    break
-                ref = proofs[i]
-                key = (ref.source, ref.theorem_id, ref.proof_index)
-                if key in chosen_keys:
-                    continue
-                attempt = corrupt_random_line(ref.contents, rng, use_gpt=False)
-                if attempt is None:
-                    continue
-                line_idx, modified_line, selection_method, corruption_method = attempt
-                original_line = ref.contents[line_idx]
-                modified_proof = list(ref.contents)
-                modified_proof[line_idx] = modified_line
-                results.append(
-                    {
-                        "source": ref.source,
-                        "theorem_id": ref.theorem_id,
-                        "theorem_title": ref.theorem_title,
-                        "proof_index": ref.proof_index,
-                        "proof_length": len(ref.contents),
-                        "bin_index": None,
-                        "chosen_line_index": line_idx,
-                        "original_line": original_line,
-                        "modified_line": modified_line,
-                        "original_proof": ref.contents,
-                        "modified_proof": modified_proof,
-                        "selection_method": selection_method,
-                        "corruption_method": corruption_method,
-                    }
-                )
-                chosen_keys.add(key)
 
     output = {"seed": seed, "n": n, "use_gpt": use_gpt, "min_lines": min_lines, "samples": results}
     if bin_boundaries is not None:
@@ -1947,38 +1132,8 @@ def main():
         default=100,
         help="Batch size for GPT corrupt stage (default 1 to avoid cache issues)",
     )
-    parser.add_argument(
-        "--clean-only",
-        action="store_true",
-        default=False,
-        help="Pre-filter proofs by sending them to GPT and keeping only those judged correct",
-    )
-    parser.add_argument(
-        "--clean-batch-size",
-        type=int,
-        default=100,
-        help="Batch size for cleanliness checks (default 1)",
-    )
-    parser.add_argument(
-        "--include",
-        type=str,
-        # default='[13653]',
-        help="Force-include theorem IDs (e.g., --include '[123,44]' or '123,44')",
-    )
 
     args = parser.parse_args()
-
-    # Parse include IDs
-    include_ids: Optional[List[int]] = None
-    if args.include:
-        txt = args.include.strip()
-        try:
-            if txt.startswith('['):
-                include_ids = [int(x) for x in json.loads(txt)]
-            else:
-                include_ids = [int(x.strip()) for x in txt.split(',') if x.strip()]
-        except Exception:
-            include_ids = None
 
     run(
         seed=args.seed,
@@ -1992,9 +1147,6 @@ def main():
         llm_cache_file=args.cache_file,
         pick_batch_size=args.pick_batch_size,
         corrupt_batch_size=args.corrupt_batch_size,
-        clean_only=args.clean_only,
-        clean_batch_size=args.clean_batch_size,
-        include_ids=include_ids,
         hard_bins=args.hard_bins,
         min_samples_per_bin=args.min_samples_per_bin,
     )

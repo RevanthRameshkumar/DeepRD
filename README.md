@@ -298,5 +298,15 @@ The script automatically:
 - For individual files: Normalizes to probability distributions
 - For directories (e.g., `data/agg_lookahead/`, `data/agg_branches/`): Normalizes each file separately, then averages distributions
 
+## HPC Computation Scripts
+
+For extremely large graphs, use these optimized scripts on an HPC cluster to calculate branching and lookahead metrics:
+
+- **`data_to_triples.py`** - Converts graph datasets to edge triple format for efficient processing
+- **`lookahead_numba.py`** - Numba-optimized computation of lookahead distributions
+- **`pairwise_distances_numba.py`** - Numba-optimized computation for getting pairwise distance distribution across all source-target pairs
+
+These scripts leverage Numba JIT compilation for high-performance graph metric calculation on large-scale datasets.
+
 
 
