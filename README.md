@@ -249,4 +249,54 @@ python3 llm_results/llm_metrics.py \
     - `{mode}_length_stops_branch_1.pdf` - Length stop rates for branch=1
 
 
+# Real-World Graphs and Proofs Analysis (in /real_world_graphs_and_proofs)
+
+This directory contains the analysis of lookahead and branching distributions in real-world knowledge graphs and mathematical proofs
+
+## Dataset Sources
+
+The analysis includes data from:
+
+**Knowledge Graphs:**
+- **ConceptNet 5.7.0** - General knowledge graph
+- **ogbl-wikikg2** - Wikidata knowledge graph subset
+- **ogbn-papers100M** - Citation network
+- **ogb datasets** - Open Graph Benchmark datasets (aggregated)
+  - Molecular graphs (molbace, molbbbp, molhiv, etc.)
+  - Code graphs (code2)
+  - Biological graphs (biokg, proteins)
+  - Citation networks (arxiv, citation2, mag)
+  - Collaboration networks (collab, ppa)
+
+**Mathematical Proofs:**
+- **NaturalProofs** - theorems from three sources:
+  - ProofWiki
+  - Stacks Project
+  - Trench's textbook
+
+All data files are stored in `data/` with Git LFS tracking.
+
+## Generating Histograms
+
+The `generate_histograms.py` script creates a two-row visualization comparing lookahead and branching distributions:
+
+```bash
+cd real_world_graphs_and_proofs
+python3 generate_histograms.py
+```
+
+**Output:** `lookahead_branch_histograms.pdf`
+
+The script automatically:
+1. Generates `proof_lookahead_results_full.tsv` from NaturalProofs JSON files (if not already present)
+2. Loads and normalizes all lookahead distribution data
+3. Loads and normalizes all branching distribution data
+4. Creates log-log histograms with quantile lines at [0.5, 0.75, 0.9, 0.99, 0.999]
+5. Saves the combined visualization as a PDF
+
+**Data Processing:**
+- For individual files: Normalizes to probability distributions
+- For directories (e.g., `data/agg_lookahead/`, `data/agg_branches/`): Normalizes each file separately, then averages distributions
+
+
 
