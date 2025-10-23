@@ -381,10 +381,9 @@ python3 proof_verification.py \
 - `--length-bins N` - Number of bins for metrics aggregation
 - `--min-metric-length N` - Minimum proof length for metric calculation
 
-**Output:** `results.json` with:
-- Per-sample verification results
-- Detection accuracy metrics
-- Aggregated metrics by proof length
+**Output:**
+- `results.json` - Verification results with per-sample data and aggregated metrics (including full LLM response)
+- `results.png` - Accuracy plot by proof length
 
 ### Step 3: Verify Clean Proofs (Trivial Mode)
 
