@@ -28,6 +28,7 @@ Optional Arguments:
   -n, --samples N               Samples per combination (default: 10)
   -o, --output FILE             Output filename (default: auto-generated)
   --seed SEED                   Random seed (default: 9, same as paper)
+  --mode {symbolic,logic}       Output format: symbolic or logic (default: symbolic)
   --no-dedupe                   Disable graph deduplication
   --no-enforce-branches         Disable strict branching enforcement
   -q, --quiet                   Suppress progress output
@@ -35,36 +36,125 @@ Optional Arguments:
 
 ## Quick Start
 ```bash
-# Generate a small test dataset of 5 samples with lookaheads 2,4 and branches 1,2; and write to test.json
-python3 graph_generator.py -l 2 4 -b 1 2 --samples 5 -o test.json
+# Generate a small symbolic (graph path) dataset
+python3 graph_generator.py -l 2 4 -b 1 2 --samples 5 -o test_symbolic.json
 
-# Generate paper's full dataset
+# Generate a small logic (proof next step) dataset
+python3 graph_generator.py -l 2 4 -b 1 2 --samples 5 --mode logic -o test_logic.json
+
+# Generate paper's full symbolic dataset (branching)
 python3 graph_generator.py \
   -l 2 3 4 5 6 7 8 9 10 16 32 64 100 128 150 200 250 256 300 350 512 800 \
   -b 2 4 8 16 \
   --samples 10 \
   -o branching_dataset.json
 
+# Generate paper's full symbolic dataset (trivial/linear)
 python3 graph_generator.py \
   -l 2 3 4 5 6 7 8 9 10 16 32 64 100 128 150 200 250 256 300 350 512 1024 1536 \
   -b 1 \
   --samples 10 \
   -o trivial_dataset.json
+
+# Generate logic dataset from same graph parameters
+python3 graph_generator.py \
+  -l 2 3 4 5 6 7 8 9 10 16 32 64 100 128 150 200 250 256 300 350 512 800 \
+  -b 2 4 8 16 \
+  --samples 10 \
+  --mode logic \
+  -o logic_dataset.json
 ```
 
 ## Output Format
 
-Generated JSON contains list of samples with:
-
+**Symbolic mode (default)** - Graph path finding:
 ```json
 {
   "edges": [[1,3], [3,7], ...],      // Directed edge list
-  "query": [1, 8],                    // Start and end nodes  
+  "query": [1, 8],                    // Start and end nodes
   "lookahead_size": 2,                // Lookahead values
   "max_branches": 2,                  // Branching factor
   "question": "Determine if there..." // Full question text
 }
 ```
+
+**Logic mode** - Proofs next step:
+```json
+{
+  "edges": [[1,2], [2,3]],
+  "query": [1, 3],
+  "lookahead_size": 2,
+  "max_branches": 1,
+  "question": "Determine if there...",
+  "logic_predicates": "Given the following list of predicates:\nIf someone is X, they are Y...",
+  "logical_question": "Given that James is X, and we want to prove James is Z...",
+  "next_adjective": ["Y"],           // Correct answer(s)
+  "node_mapping": {                  // Node ID -> name and predicate mapping
+    "1": {"name": "James", "adjective": "X"},
+    "2": {"name": "James", "adjective": "Y"}
+  }
+}
+```
+
+
+# LLM Prediction (in /llm_prediction)
+
+Run LLM inference on graph datasets to reproduce the paper's results.
+
+## Setup
+
+1. **Configure API Keys**: Copy `.env.template` to `.env` and add your API keys:
+   ```bash
+   cp .env.template .env
+   # Edit .env and add your API keys:
+   # OPENAI_API_KEY=your_key_here
+   # TOGETHER_API_KEY=your_key_here
+   ```
+
+2. **Install Dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+## Usage
+
+```bash
+cd llm_prediction
+
+# Symbolic reasoning (graph path finding)
+python llm_prediction.py \
+  --mode symbolic \
+  --model o3-mini \
+  --input-file ../graph_generator/branching_dataset.json \
+  --reasoning-effort medium \
+  --output-dir ../llm_results/symbolic
+
+# Logic reasoning (proof next step prediction)
+python llm_prediction.py \
+  --mode logic \
+  --model r1 \
+  --input-file ../graph_generator/logic_dataset.json \
+  --output-dir ../llm_results/logic
+```
+
+**Arguments:**
+- `--mode {symbolic,logic}`: Reasoning task type
+  - `symbolic`: Graph path finding (uses |YES|/|NO| prompts)
+  - `logic`: Logical next step prediction (uses fill-in-blank prompts)
+- `--model {o3,o3-mini,r1,v3,gpt4o,gpt4}`: LLM model to use
+  - `o3`, `o3-mini`: OpenAI o3 models (requires `--reasoning-effort`)
+  - `r1`, `v3`: DeepSeek R1/V3 (Together AI)
+  - `gpt4o`, `gpt4`: GPT-4 variants (OpenAI)
+- `--input-file FILE`: Input JSON from graph_generator.py
+- `--output-dir DIR`: Directory for results (default: current)
+- `--cache-dir DIR`: Cache directory (default: current)
+- `--reasoning-effort {low,medium,high}`: For o3 models (default: medium)
+
+**Output:**
+- `FINAL_llm_results_{timestamp}_{model}.json` (symbolic mode)
+- `FINAL_LOGIC_llm_results_{timestamp}_{model}.json` (logic mode)
+
+Each output contains LLM responses and extracted paths/answers.
 
 
 # Experimental Results and Metrics

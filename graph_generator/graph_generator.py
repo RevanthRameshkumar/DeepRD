@@ -23,6 +23,7 @@ from typing import Iterable, Hashable
 
 import networkx as nx
 import numpy as np
+from faker import Faker
 
 
 # ============================================================================
@@ -44,6 +45,129 @@ def degree_map(edges):
     for u, v in edges:
         deg[u] += 1
     return deg
+
+
+# ============================================================================
+# Logic Format Conversion (from graph_to_logic.py)
+# ============================================================================
+
+def generate_names(n, seed=None):
+    """Generates n random names using the Faker library."""
+    fake = Faker()
+    if seed is not None:
+        Faker.seed(seed)
+    fake.unique.clear()
+    return [fake.unique.name() for i in range(n)]
+
+
+def random_syllable():
+    """Generates a random syllable using a random consonant vowel pattern."""
+    vowels = "aeiou"
+    consonants = "bcdfghjklmnpqrstvwxyz"
+    # Syllable patterns (e.g. "CV" means a consonant followed by a vowel)
+    patterns = ["CV", "VC", "CVC", "CVV", "CCV", "VCV", "VCC"]
+    pattern = random.choice(patterns)
+
+    syllable = ""
+    for char in pattern:
+        if char == "C":
+            syllable += random.choice(consonants)
+        elif char == "V":
+            syllable += random.choice(vowels)
+    return syllable
+
+
+def generate_fake_attribute():
+    """Generates a fake 2-syllable attribute."""
+    return random_syllable() + random_syllable()
+
+
+def generate_fake_attributes(n):
+    """Generates n unique fake attributes."""
+    nouns = set()
+    while len(nouns) < n:
+        nouns.add(generate_fake_attribute())
+    return list(nouns)
+
+
+def get_logic_line(name_a, name_b, adj_a, adj_b):
+    """Return a random predicate using one of the options"""
+    choices = [
+        f"If {name_a} is {adj_a}, then {name_b} is {adj_b}.",
+        f"If {name_a} is {adj_a}, then they are {adj_b}.",
+        f"If {name_a} is {adj_a} then they are {adj_b}.",
+        f"If a person is {adj_a}, they are {adj_b}.",
+        f"Everyone that is {adj_a} is {adj_b}.",
+        f"Each person that is {adj_a} is {adj_b}.",
+        f"If someone is {adj_a}, they are {adj_b}.",
+        f"If someone is {adj_a} then they are {adj_b}.",
+        f"If someone is {adj_a}, then they are {adj_b}."
+    ]
+
+    sentence = random.choice(choices)
+    return sentence[0].upper() + sentence[1:]
+
+
+def process_graph_data(item, seed=None):
+    """Process a single graph item and add natural language predicate fields."""
+    edges = item['edges']
+    query = item['query']
+    all_paths = item.get('possible_valid_paths', [])
+
+    # Get all unique node IDs
+    node_ids = set()
+    for edge in edges:
+        node_ids.add(edge[0])
+        node_ids.add(edge[1])
+
+    # Generate names and attributes
+    num_nodes = len(node_ids)
+    all_names = generate_names(num_nodes, seed=seed)
+    all_attributes = generate_fake_attributes(num_nodes)
+
+    sorted_nodes = sorted(node_ids)
+    id_to_pair = {}  # node_id -> (name, attribute)
+
+    # Assign each node a name and adjective
+    # Change to true if we want to use different names for each predicate
+    # (default to using the same name for all predicates)
+    use_diff_names = False
+    for idx, node_id in enumerate(sorted_nodes):
+        id_to_pair[node_id] = (all_names[idx if use_diff_names else 0], all_attributes[idx])
+
+    # Generate natural language lines
+    lines = ["Given the following list of predicates:"]
+
+    # Convert edges to logical implications
+    for (A, B) in edges:
+        name_A, adj_A = id_to_pair[A]
+        name_B, adj_B = id_to_pair[B]
+        lines.append(get_logic_line(name_A, name_B, adj_A, adj_B))
+
+    # Create logical question for the query
+    X, Y = query
+    name_x, adj_x = id_to_pair[X]
+    name_y, adj_y = id_to_pair[Y]
+    logical_question = f"Given that {name_x} is {adj_x}, and we want to prove {name_y} is {adj_y}. The next step in the proof is: {name_x} is _____."
+
+    # Find the next adjective in the path
+    next_adjectives = []
+    for path in all_paths:
+        if path and len(path) >= 2:
+            # The path starts at query[0], so find the next node in the path
+            if path[0] == X and len(path) > 1:
+                next_node = path[1]
+                _, adj = id_to_pair[next_node]
+                if adj not in next_adjectives:  # Avoid duplicates
+                    next_adjectives.append(adj)
+
+    # Add new fields to the item
+    item['logic_predicates'] = '\n'.join(lines)
+    item['logical_question'] = logical_question
+    item['next_adjective'] = next_adjectives
+    item['node_mapping'] = {str(k): {'name': v[0], 'adjective': v[1]} for k, v in id_to_pair.items()}
+
+    return item
 
 
 # ============================================================================
@@ -231,6 +355,18 @@ def generate_examples(lookahead_size, num_examples, max_branches,
     return final_graphs
 
 
+def find_all_paths(edges, start, end):
+    """Find all simple paths from start to end in the directed graph."""
+    G = nx.DiGraph()
+    G.add_edges_from(edges)
+    try:
+        # Find all simple paths (no repeated nodes)
+        all_paths = list(nx.all_simple_paths(G, start, end))
+        return all_paths
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        return []
+
+
 def extract_data_points(edge_and_query_list, lookahead_size, max_branches):
     """
     Convert graph representations to dataset format.
@@ -254,6 +390,9 @@ def extract_data_points(edge_and_query_list, lookahead_size, max_branches):
             continue
         previously_seen_graph.add(graph_key)
 
+        # Find all valid paths from query start to query end
+        possible_paths = find_all_paths(edge_list, query[0], query[1])
+
         # Shuffle edges for presentation variety
         random.shuffle(edge_list)
         deg = degree_map(edge_list)
@@ -269,7 +408,8 @@ def extract_data_points(edge_and_query_list, lookahead_size, max_branches):
                 f"with a directed edge.\n\t Graph: {graph_key}\n\t "
                 f"Q: Is there a path between node {query[0]} and node {query[1]} "
                 f"and what is the path?\nA:"
-            )
+            ),
+            'possible_valid_paths': possible_paths
         }
         data_points.append(point)
 
@@ -344,8 +484,19 @@ Examples:
         action='store_true',
         help='Suppress progress output'
     )
+    parser.add_argument(
+        '--mode',
+        type=str,
+        choices=['symbolic', 'logic'],
+        default='symbolic',
+        help='Output format: symbolic (graph path finding) or logic (attribute proofs) (default: symbolic)'
+    )
 
     args = parser.parse_args()
+
+    # Set random seed for reproducibility (for both Python and C++)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
 
     # Load C++ module
     load_graph_generation_module()
@@ -396,6 +547,21 @@ Examples:
                 max_branches=branch_size
             )
             all_data_points.extend(data_points)
+
+    # Apply logic conversion if mode is logic
+    if args.mode == 'logic':
+        if verbose:
+            print(f"\n{'='*60}")
+            print("Converting to logic format...")
+        processed_data = []
+        for i, item in enumerate(all_data_points):
+            if verbose and (i + 1) % 10 == 0:
+                print(f"  Processing item {i + 1}/{len(all_data_points)}")
+            processed_item = process_graph_data(item.copy(), seed=args.seed)
+            processed_data.append(processed_item)
+        all_data_points = processed_data
+        if verbose:
+            print(f"✓ Converted {len(all_data_points)} items to logic format")
 
     # Generate output filename
     if args.output:

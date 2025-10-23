@@ -1,2 +1,9 @@
 temp/*
-data/__pycache__/*
+graph_generator/__pycache__/*
+llm_prediction/__pycache__/*
+
+# Environment variables
+.env
+
+# LLM cache files
+*.pkl
