@@ -1385,10 +1385,10 @@ def main():
     parser.add_argument("--assume-incorrect", action="store_true", help="Change system prompt to assert there IS a mistake and the task is to find the earliest erroneous line.")
     parser.add_argument("--trivial", action="store_true", help="Evaluate unmodified proofs; metrics expect is_correct == True and filename gets .trivial appended")
     parser.add_argument("--strict-metrics", action="store_true", help="Only evaluate correctness (is_correct) without checking error_line localization")
-    parser.add_argument("--double-check", action="store_true", help="Use a secondary model to verify detected errors. In trivial mode: checks all flagged errors. In perturbed mode: checks errors far from perturbation")
+    parser.add_argument("--double-check", default=True, action="store_true", help="Use a secondary model to verify detected errors. In trivial mode: checks all flagged errors. In perturbed mode: checks errors far from perturbation")
     parser.add_argument("--double-check-model", type=str, default="o3", help="Model to use for double-checking detected errors (default: o3)")
     parser.add_argument("--double-check-distance-threshold", type=int, default=5, help="In perturbed mode, minimum line distance from perturbation to trigger double-check (default: 5)")
-    parser.add_argument("--double-check-with-fix", action="store_true", help="When double-check finds legitimate errors (Category A), fix them iteratively until perturbation found or no more errors. Requires --double-check.")
+    parser.add_argument("--double-check-with-fix", default=True, action="store_true", help="When double-check finds legitimate errors (Category A), fix them iteratively until perturbation found or no more errors. Requires --double-check.")
     args = parser.parse_args()
 
     # Validation: --double-check-with-fix requires --double-check

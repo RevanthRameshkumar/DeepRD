@@ -309,4 +309,106 @@ For extremely large graphs, use these optimized scripts on an HPC cluster to cal
 These scripts leverage Numba JIT compilation for high-performance graph metric calculation on large-scale datasets.
 
 
+# Proof Verification (in /proof_verification)
+
+This directory contains tools for testing LLM ability to detect errors in mathematical proofs. The workflow corrupts proofs from the NaturalProofs dataset and evaluates whether LLMs can identify the introduced errors.
+
+## Workflow Overview
+
+1. **Sample and Corrupt** - Sample proofs stratified by length and introduce single-line errors using LLMs
+2. **Verify Proofs** - Run LLM verification on both corrupted proofs (perturbed mode) and clean proofs (trivial mode), and visualize results
+
+## Usage
+
+### Step 1: Sample and Corrupt Proofs
+
+Sample mathematical proofs from NaturalProofs, stratify by length, and introduce errors using two-stage GPT corruption (gpt-4o selects lines, o3-mini corrupts them):
+
+```bash
+cd proof_verification
+
+python3 sample_and_corrupt.py \
+  --seed 123 \
+  --n 100 \
+  --bins 5 \
+  --hard-bins \
+  --min-samples-per-bin 10 \
+  --use-gpt \
+  --min-lines 5 \
+  --out corrupted_proofs.json \
+  --cache-file proof_cache.pkl \
+  --pick-batch-size 10 \
+  --corrupt-batch-size 10
+```
+
+**Key Arguments:**
+- `--seed SEED` - Random seed for reproducibility
+- `--n N` - Number of proof samples to generate
+- `--bins N` - Number of length bins for stratified sampling
+- `--hard-bins` - Use integer bin boundaries (recommended)
+- `--min-samples-per-bin N` - Minimum samples per bin (adaptive binning merges bins if needed)
+- `--use-gpt` - Use GPT for two-stage corruption (pick + corrupt)
+- `--min-lines N` - Minimum proof length to include
+- `--out FILE` - Output JSON file path
+- `--cache-file FILE` - LLM response cache file
+- `--pick-batch-size N` - Batch size for line selection
+- `--corrupt-batch-size N` - Batch size for corruption
+
+**Output:** JSON file containing:
+- Sampled proofs with `original_proof` and `modified_proof`
+- Metadata: source, theorem info, chosen line, corruption method
+- Bin boundaries (if `--hard-bins` used)
+
+### Step 2: Verify Corrupted Proofs (Perturbed Mode)
+
+Run LLM verification on corrupted proofs to test error detection:
+
+```bash
+python3 proof_verification.py \
+  --input corrupted_proofs.json \
+  --out results.json \
+  --model gpt-4o \
+  --pre-bins \
+  --length-bins 5 \
+  --min-metric-length 4
+```
+
+**Key Arguments:**
+- `--input FILE` - Input JSON from sample_and_corrupt.py
+- `--out FILE` - Output results JSON path
+- `--model {gpt-4o,o3-mini,o3,r1}` - LLM model for verification
+- `--pre-bins` - Use bin boundaries from input file
+- `--length-bins N` - Number of bins for metrics aggregation
+- `--min-metric-length N` - Minimum proof length for metric calculation
+
+**Output:** `results.json` with:
+- Per-sample verification results
+- Detection accuracy metrics
+- Aggregated metrics by proof length
+
+### Step 3: Verify Clean Proofs (Trivial Mode)
+
+Run verification on the original uncorrupted proofs as a baseline:
+
+```bash
+python3 proof_verification.py \
+  --input corrupted_proofs.json \
+  --out results.json \
+  --model gpt-4o \
+  --pre-bins \
+  --length-bins 5 \
+  --min-metric-length 4 \
+  --trivial
+```
+
+**Output:** `results.trivial.json` - Verification results for clean proofs (should ideally have 100% correct verdicts)
+
+## Data Dependencies
+
+Scripts automatically load NaturalProofs data from:
+- `../real_world_graphs_and_proofs/data/naturalproofs_proofwiki.json`
+- `../real_world_graphs_and_proofs/data/naturalproofs_stacks.json`
+- `../real_world_graphs_and_proofs/data/naturalproofs_trench.json`
+
+
 
