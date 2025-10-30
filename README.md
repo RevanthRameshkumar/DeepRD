@@ -1,17 +1,25 @@
+:tada: Accepted at AACL 2025!
+
 # DeepRD
 Evaluation toolset for LLMs using parameterized graph complexity
 
 # Citation
 This repo contains code to perform the experiments and analysis in our paper: "Reasoning Models Reason Well, Until They Don’t"
-
-
+https://arxiv.org/abs/2510.22371
 
 If you use this data, analysis, or code in your work, please cite:
 
-[bibtex citation coming soon!]
-Reasoning Models Reason Well, Until They Don’t
-Revanth Rameshkumar, Jimson Huang, Yunxin Sun, Fei Xia, Abulhair Saparov
-{revr,fxia}@uw.edu {huan2073,sun1114,asaparov}@purdue.edu
+```
+@misc{rameshkumar2025reasoningmodelsreasonwell,
+      title={Reasoning Models Reason Well, Until They Don't}, 
+      author={Revanth Rameshkumar and Jimson Huang and Yunxin Sun and Fei Xia and Abulhair Saparov},
+      year={2025},
+      eprint={2510.22371},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2510.22371}, 
+}
+```
 
 
 # Graph Dataset Generator (in /graph_generator)
