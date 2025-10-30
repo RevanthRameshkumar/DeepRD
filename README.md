@@ -1,4 +1,4 @@
-:tada: **Accepted at AACL 2025!**
+# :tada: **Accepted at AACL 2025!**
 
 # DeepRD
 Evaluation toolset for LLMs using parameterized graph complexity
