@@ -1,8 +1,6 @@
 # :tada: **Accepted at AACL 2025!**
 
-# DeepRD
-Evaluation toolset for LLMs using parameterized graph complexity
-
+# Reasoning Models Reason Well, Until They Don't
 ## Abstract
 Large language models (LLMs) have shown significant progress in reasoning tasks. However, recent studies show that transformers and LLMs fail catastrophically once reasoning problems exceed modest complexity. We revisit these findings through the lens of large reasoning models (LRMs) -- LLMs fine-tuned with incentives for step-by-step argumentation and self-verification. LRM performance on graph and reasoning benchmarks such as NLGraph seem extraordinary, with some even claiming they are capable of generalized reasoning and innovation in reasoning-intensive fields such as mathematics, physics, medicine, and law. However, by more carefully scaling the complexity of reasoning problems, we show existing benchmarks actually have limited complexity. We develop a new dataset, the Deep Reasoning Dataset (DeepRD), along with a generative process for producing unlimited examples of scalable complexity. We use this dataset to evaluate model performance on graph connectivity and natural language proof planning. We find that the performance of LRMs drop abruptly at sufficient complexity and do not generalize. We also relate our LRM results to the distributions of the complexities of large, real-world knowledge graphs, interaction graphs, and proof datasets. We find the majority of real-world examples fall inside the LRMs' success regime, yet the long tails expose substantial failure potential. Our analysis highlights the near-term utility of LRMs while underscoring the need for new methods that generalize beyond the complexity of examples in the training distribution.
 
@@ -25,7 +23,7 @@ If you use this data, analysis, or code in your work, please cite:
 ```
 
 
-# Graph Dataset Generator (in /graph_generator)
+# DeepRD: Graph Dataset Generator (in /graph_generator)
 ## Usage
 
 ```
