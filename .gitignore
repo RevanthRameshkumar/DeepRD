@@ -1,4 +1,5 @@
 temp/*
+output/*
 graph_generator/__pycache__/*
 llm_prediction/__pycache__/*
 

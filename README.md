@@ -170,6 +170,16 @@ Each output contains LLM responses and extracted paths/answers.
 
 This repository contains the final experimental results from the paper in the `llm_results/` directory.
 
+## Setup: Downloading Large Files
+
+The result files and datasets in this repository are tracked with Git LFS (Large File Storage). After cloning the repository, you must download the actual files:
+
+```bash
+git lfs pull
+```
+
+This will download all large JSON files. Without this step, you'll only have small pointer files that will cause JSON parsing errors.
+
 ## Symbolic Reasoning Results (Graph Path Finding) in `llm_results/symbolic`
 
 | Model | File |
